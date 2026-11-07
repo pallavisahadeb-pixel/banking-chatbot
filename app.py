@@ -1,4 +1,5 @@
 """Rule-based banking chatbot logic (intent + entity detection, multi-turn slots)."""
+import base64
 import re
 
 import streamlit as st
@@ -249,7 +250,7 @@ def get_reply(message, state):
 # =====================================================================
 #                          STREAMLIT UI
 # =====================================================================
-st.set_page_config(page_title=f"{BANK_NAME} Assistant", page_icon="🏦")
+st.set_page_config(page_title=f"{BANK_NAME} Assistant", page_icon="🏦", layout="wide")
 
 WELCOME = "Hello! Ask me about accounts, cards, transactions, branches, services or complaints."
 
@@ -262,41 +263,276 @@ SAMPLE_PROMPTS = [
     "I need a cheque book",
 ]
 
+PAGES = ["🏠 Home", "💬 Chat", "⚡ Quick Services", "📝 Complaint Form", "🔬 NLP Playground"]
 
+
+# ---------- Images: SVGs generated in code, so no image files are needed ----------
+def svg_img(svg, radius=14):
+    b64 = base64.b64encode(svg.encode("utf-8")).decode()
+    return (f'<img src="data:image/svg+xml;base64,{b64}" '
+            f'style="width:100%;border-radius:{radius}px;" />')
+
+
+def hero_svg():
+    cols = "".join(f'<rect x="{x}" y="55" width="20" height="85"/>' for x in (16, 58, 100, 142, 184))
+    return f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 230">
+<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+<stop offset="0" stop-color="#0f3d91"/><stop offset="1" stop-color="#1fa2ff"/></linearGradient></defs>
+<rect width="900" height="230" fill="url(#g)"/>
+<g fill="#ffffff" opacity="0.92" transform="translate(640,35)">
+<polygon points="110,0 220,45 0,45"/>{cols}
+<rect x="0" y="145" width="220" height="14"/><rect x="-10" y="159" width="240" height="12"/></g>
+<text x="50" y="105" font-family="sans-serif" font-size="44" font-weight="bold" fill="#fff">{BANK_NAME} Assistant</text>
+<text x="50" y="145" font-family="sans-serif" font-size="20" fill="#e8f3ff">Ask about accounts, cards, transfers, branches and more</text>
+<rect x="50" y="165" width="330" height="34" rx="17" fill="#ffffff" opacity="0.2"/>
+<text x="68" y="188" font-family="sans-serif" font-size="16" fill="#fff">Rule-based NLP  |  Multi-turn dialog</text>
+</svg>"""
+
+
+def feature_svg(emoji, title, sub, c1, c2):
+    return f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 170">
+<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+<stop offset="0" stop-color="{c1}"/><stop offset="1" stop-color="{c2}"/></linearGradient></defs>
+<rect width="300" height="170" fill="url(#g)"/>
+<circle cx="250" cy="40" r="70" fill="#fff" opacity="0.12"/>
+<text x="24" y="85" font-size="52">{emoji}</text>
+<text x="24" y="124" font-family="sans-serif" font-size="22" font-weight="bold" fill="#fff">{title}</text>
+<text x="24" y="148" font-family="sans-serif" font-size="13" fill="#fff" opacity="0.9">{sub}</text>
+</svg>"""
+
+
+def flow_svg():
+    boxes = [
+        (20, "1  You type", "any banking question", "#e3f2fd", "#1565c0"),
+        (330, "2  NLP analysis", "intent + entities found", "#fff3e0", "#e65100"),
+        (640, "3  Smart reply", "answer or follow-up", "#e8f5e9", "#2e7d32"),
+    ]
+    parts = ['<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 200">',
+             '<rect width="900" height="200" fill="#f7f9fc"/>']
+    for x, t, s, bg, fg in boxes:
+        parts.append(f'<rect x="{x}" y="40" width="240" height="120" rx="16" fill="{bg}" stroke="{fg}" stroke-width="2"/>')
+        parts.append(f'<text x="{x + 20}" y="90" font-family="sans-serif" font-size="24" font-weight="bold" fill="{fg}">{t}</text>')
+        parts.append(f'<text x="{x + 20}" y="124" font-family="sans-serif" font-size="16" fill="#444">{s}</text>')
+    for x in (268, 578):
+        parts.append(f'<polygon points="{x},85 {x + 40},100 {x},115" fill="#90a4ae"/>')
+    parts.append("</svg>")
+    return "".join(parts)
+
+
+# ---------- Session state ----------
 def reset_chat():
     st.session_state.messages = [{"role": "assistant", "content": WELCOME}]
     st.session_state.state = new_state()
+    st.session_state.last_analysis = None
 
 
-if "messages" not in st.session_state:
-    reset_chat()
+def init_session():
+    st.session_state.setdefault("tickets", [])
+    if "messages" not in st.session_state:
+        reset_chat()
+
+
+def analyze(text):
+    cleaned = clean_text(text)
+    intent, score = detect_intent(cleaned)
+    return {"cleaned": cleaned, "intent": intent or "NONE", "score": score,
+            "entities": extract_entities(cleaned)}
+
+
+def send_message(user_text):
+    analysis = analyze(user_text)
+    reply = get_reply(user_text, st.session_state.state)
+    name = st.session_state.get("user_name", "").strip()
+    if name and analysis["intent"] == "GREETING" and reply.startswith("Hello!"):
+        reply = reply.replace("Hello!", f"Hello {name}!", 1)
+    st.session_state.messages.append({"role": "user", "content": user_text})
+    st.session_state.messages.append({"role": "assistant", "content": reply, "meta": analysis})
+    st.session_state.last_analysis = analysis
+
+
+def show_analysis(a):
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Intent", a["intent"])
+    c2.metric("Keyword score", a["score"])
+    c3.metric("Entities found", len(a["entities"]))
+    st.caption(f"Cleaned text: `{a['cleaned']}`")
+    if a["entities"]:
+        st.json(a["entities"])
+    else:
+        st.caption("No entities found in this message.")
+
+
+# ---------- Pages ----------
+def page_home():
+    st.markdown(svg_img(hero_svg(), 18), unsafe_allow_html=True)
+    st.write("")
+    n_user = sum(1 for m in st.session_state.messages if m["role"] == "user")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Intents understood", len(INTENT_KEYWORDS))
+    m2.metric("Entity types", len(ENTITIES))
+    m3.metric("Messages you sent", n_user)
+    m4.metric("Complaints logged", len(st.session_state.tickets))
+
+    st.subheader("What can this assistant do?")
+    cards = [
+        ("🏦", "Accounts", "Savings, current, FD, RD", "#0f3d91", "#1fa2ff"),
+        ("💳", "Cards", "Debit, credit, prepaid, block", "#6a1b9a", "#ab47bc"),
+        ("🔁", "Transfers", "UPI, NEFT, RTGS, IMPS", "#00695c", "#26a69a"),
+        ("📍", "Branches", "Timings and IFSC by city", "#e65100", "#ffa726"),
+        ("🧾", "Services", "Cheque book, passbook, loans", "#283593", "#5c6bc0"),
+        ("🛠️", "Complaints", "Get a reference number", "#b71c1c", "#ef5350"),
+    ]
+    for row in (cards[:3], cards[3:]):
+        cols = st.columns(3)
+        for col, (e, t, s, c1, c2) in zip(cols, row):
+            col.markdown(svg_img(feature_svg(e, t, s, c1, c2)), unsafe_allow_html=True)
+        st.write("")
+
+    st.subheader("How it works")
+    st.markdown(svg_img(flow_svg()), unsafe_allow_html=True)
+    st.info("Use the sidebar to open the **Chat**, try the **Quick Services** input boxes, "
+            "file a **Complaint**, or poke at the NLP in the **Playground**.")
+
+
+def page_chat():
+    st.subheader("💬 Chat with the assistant")
+    st.caption("Please do not share PIN, OTP, passwords or card/account numbers in this chat.")
+
+    cols = st.columns(3)
+    for i, p in enumerate(SAMPLE_PROMPTS):
+        if cols[i % 3].button(p, key=f"sample_{i}", use_container_width=True):
+            st.session_state.queued = p
+
+    for m in st.session_state.messages:
+        with st.chat_message(m["role"]):
+            st.markdown(m["content"])
+            if m.get("meta"):
+                with st.expander("🔍 NLP analysis of the previous message"):
+                    show_analysis(m["meta"])
+
+    pending = st.session_state.state["pending"]
+    if pending:
+        st.info(f"The bot is waiting for: **{REQUIRED_SLOT[pending]}** "
+                "(type 'never mind' to cancel).")
+
+    user_input = st.chat_input("Type your message...")
+    if "queued" in st.session_state:
+        user_input = st.session_state.pop("queued")
+    if user_input:
+        send_message(user_input)
+        st.rerun()
+
+
+def info_picker(label, table):
+    choice = st.selectbox(label, list(table.keys()), key=f"pick_{label}")
+    st.success(table[choice])
+
+
+def emi_calculator():
+    c1, c2, c3 = st.columns(3)
+    amount = c1.number_input("Loan amount (Rs)", min_value=10000, max_value=50000000,
+                             value=500000, step=10000)
+    rate = c2.number_input("Interest rate (% p.a.)", min_value=0.0, max_value=30.0,
+                           value=9.5, step=0.1)
+    years = c3.slider("Tenure (years)", 1, 30, 5)
+    n = years * 12
+    r = rate / 12 / 100
+    emi = amount / n if r == 0 else amount * r * (1 + r) ** n / ((1 + r) ** n - 1)
+    total = emi * n
+    k1, k2, k3 = st.columns(3)
+    k1.metric("Monthly EMI", f"Rs {emi:,.0f}")
+    k2.metric("Total interest", f"Rs {total - amount:,.0f}")
+    k3.metric("Total payable", f"Rs {total:,.0f}")
+    import pandas as pd
+    st.bar_chart(pd.DataFrame({"Rs": [amount, total - amount]}, index=["Principal", "Interest"]))
+    st.caption("Illustrative calculation only, not a loan offer.")
+
+
+def page_quick():
+    st.subheader("⚡ Quick Services")
+    st.caption("Pick an option from the input boxes instead of typing. All data is sample data.")
+    tabs = st.tabs(["🏦 Accounts", "💳 Cards", "🔁 Transfers", "📍 Branches", "🧾 Services", "🧮 Loan EMI"])
+    with tabs[0]:
+        info_picker("Account type", ACCOUNT_INFO)
+    with tabs[1]:
+        info_picker("Card type", CARD_INFO)
+    with tabs[2]:
+        info_picker("Transfer type", TRANSACTION_INFO)
+    with tabs[3]:
+        info_picker("City", BRANCH_INFO)
+    with tabs[4]:
+        info_picker("Service", SERVICE_INFO)
+    with tabs[5]:
+        emi_calculator()
+
+
+def page_complaint():
+    st.subheader("📝 Complaint Form")
+    st.warning(SAFETY_NOTE)
+    with st.form("complaint_form", clear_on_submit=True):
+        name = st.text_input("Your name", value=st.session_state.get("user_name", ""))
+        category = st.selectbox("Category", ["Account", "Card", "Transaction", "Branch", "Service", "Other"])
+        severity = st.select_slider("How urgent is it?", ["Low", "Medium", "High"], value="Medium")
+        details = st.text_area("Describe the problem", placeholder="e.g. UPI payment failed but money was deducted")
+        submitted = st.form_submit_button("Submit complaint")
+
+    if submitted:
+        if not name.strip() or not details.strip():
+            st.error("Please enter your name and describe the problem.")
+        else:
+            st.session_state.state["ticket"] += 1
+            ref = f"CMP{st.session_state.state['ticket']}"
+            st.session_state.tickets.append(
+                {"Reference": ref, "Name": name.strip(), "Category": category,
+                 "Urgency": severity, "Details": details.strip()})
+            st.success(f"Complaint registered. Your sample reference is **{ref}**. "
+                       "A support officer will contact you within 2 working days.")
+
+    if st.session_state.tickets:
+        st.markdown("#### Complaints logged in this session")
+        st.dataframe(st.session_state.tickets, use_container_width=True, hide_index=True)
+
+
+def page_playground():
+    st.subheader("🔬 NLP Playground")
+    st.caption("Type any sentence and see the intent and entities the bot detects, live.")
+    text = st.text_input("Your sentence", value="I want a credit card from the Mumbai branch",
+                         key="playground_text")
+    if text.strip():
+        show_analysis(analyze(text))
+        cleaned = clean_text(text)
+        hits = {i: [k for k in kws if contains(cleaned, k)] for i, kws in INTENT_KEYWORDS.items()}
+        hits = {i: k for i, k in hits.items() if k}
+        if hits:
+            st.markdown("**Matched keywords per intent**")
+            st.json(hits)
+
+
+# ---------- Sidebar + routing ----------
+init_session()
 
 with st.sidebar:
-    st.header("About")
-    st.write("A rule-based NLP banking assistant (intent detection, entity extraction, "
-             "and multi-turn follow-up questions). All bank data is sample data.")
-    st.subheader("Try asking")
-    for p in SAMPLE_PROMPTS:
-        if st.button(p, use_container_width=True):
-            st.session_state.queued = p
+    st.title("🏦 " + BANK_NAME)
+    page = st.radio("Go to", PAGES, key="page")
+    st.text_input("Your name (optional)", key="user_name", placeholder="e.g. Pallavi")
     st.divider()
     if st.button("🔄 Reset conversation", use_container_width=True):
         reset_chat()
         st.rerun()
+    la = st.session_state.last_analysis
+    if la:
+        st.markdown("**Last message analysis**")
+        st.write(f"Intent: `{la['intent']}`")
+        st.write(f"Entities: `{la['entities'] or 'none'}`")
+    st.caption("Sample data only. Not a real bank.")
 
-st.title(f"🏦 {BANK_NAME} Assistant")
-st.caption("Please do not share PIN, OTP, passwords or card/account numbers in this chat.")
-
-for m in st.session_state.messages:
-    with st.chat_message(m["role"]):
-        st.markdown(m["content"])
-
-user_input = st.chat_input("Type your message...")
-if "queued" in st.session_state:
-    user_input = st.session_state.pop("queued")
-
-if user_input:
-    st.session_state.messages.append({"role": "user", "content": user_input})
-    reply = get_reply(user_input, st.session_state.state)
-    st.session_state.messages.append({"role": "assistant", "content": reply})
-    st.rerun()
+if page == PAGES[0]:
+    page_home()
+elif page == PAGES[1]:
+    page_chat()
+elif page == PAGES[2]:
+    page_quick()
+elif page == PAGES[3]:
+    page_complaint()
+else:
+    page_playground()
