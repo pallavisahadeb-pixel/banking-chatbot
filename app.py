@@ -1,6 +1,8 @@
 """Rule-based banking chatbot logic (intent + entity detection, multi-turn slots)."""
 import re
 
+import streamlit as st
+
 BANK_NAME = "Sample Bank"
 
 # ---------- INTENT TABLE: intent -> keywords/phrases ----------
@@ -242,3 +244,59 @@ def get_reply(message, state):
         return build_answer(intent, entities)
     state["pending"] = intent  # ask a follow-up question
     return FOLLOW_UP_QUESTION[intent]
+
+
+# =====================================================================
+#                          STREAMLIT UI
+# =====================================================================
+st.set_page_config(page_title=f"{BANK_NAME} Assistant", page_icon="🏦")
+
+WELCOME = "Hello! Ask me about accounts, cards, transactions, branches, services or complaints."
+
+SAMPLE_PROMPTS = [
+    "Tell me about savings account",
+    "I want to know about a card",
+    "What are the branch timings?",
+    "My UPI payment failed and money was deducted",
+    "How do I block my card?",
+    "I need a cheque book",
+]
+
+
+def reset_chat():
+    st.session_state.messages = [{"role": "assistant", "content": WELCOME}]
+    st.session_state.state = new_state()
+
+
+if "messages" not in st.session_state:
+    reset_chat()
+
+with st.sidebar:
+    st.header("About")
+    st.write("A rule-based NLP banking assistant (intent detection, entity extraction, "
+             "and multi-turn follow-up questions). All bank data is sample data.")
+    st.subheader("Try asking")
+    for p in SAMPLE_PROMPTS:
+        if st.button(p, use_container_width=True):
+            st.session_state.queued = p
+    st.divider()
+    if st.button("🔄 Reset conversation", use_container_width=True):
+        reset_chat()
+        st.rerun()
+
+st.title(f"🏦 {BANK_NAME} Assistant")
+st.caption("Please do not share PIN, OTP, passwords or card/account numbers in this chat.")
+
+for m in st.session_state.messages:
+    with st.chat_message(m["role"]):
+        st.markdown(m["content"])
+
+user_input = st.chat_input("Type your message...")
+if "queued" in st.session_state:
+    user_input = st.session_state.pop("queued")
+
+if user_input:
+    st.session_state.messages.append({"role": "user", "content": user_input})
+    reply = get_reply(user_input, st.session_state.state)
+    st.session_state.messages.append({"role": "assistant", "content": reply})
+    st.rerun()
